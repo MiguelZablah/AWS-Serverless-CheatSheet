@@ -1,0 +1,6 @@
+Dynamo_S3_IAM: Save-S3-IAM
+Bucket_Name: ${self:service}-service
+logRetention: 5
+Timeout: 30
+Timeout2: 35
+MemorySize: 128
