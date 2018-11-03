@@ -236,7 +236,7 @@ resources:
             Key: "STACK"
             Value: ${self:service}
           - 
-            Key: "DB"
+            Key: "S3"
             Value: ${self:custom.Bucket_Name}
 
     S3BucketLogPolicy:
@@ -247,9 +247,9 @@ resources:
         PolicyDocument:
           Statement:
             - 
+              Effect: "Allow"
               Action:
                 - "s3:GetObject"
-              Effect: "Allow"
               Resource:
                 Fn::Join:
                   - ""
