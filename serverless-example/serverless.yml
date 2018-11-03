@@ -1,0 +1,313 @@
+custom:
+  Dynamo_S3_IAM: Save-S3-IAM
+  Bucket_Name: ${self:service}-service
+  logRetention: 5
+  Timeout: 30
+  Timeout2: 35
+  MemorySize: 128
+
+service: serverless-rest-api-with-dynamodb
+
+frameworkVersion: ">=1.1.0 <2.0.0"
+
+plugins:
+  - serverless-plugin-include-dependencies
+
+provider:
+  name: aws
+  runtime: nodejs8.10
+  timeout: ${self:custom.Timeout}
+  memorySize: ${self:custom.MemorySize}
+  environment:
+    DYNAMODB_TABLE: ${self:service}-${opt:stage, self:provider.stage}
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:Query
+        - dynamodb:Scan
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+        - dynamodb:DeleteItem
+      Resource: { Fn::GetAtt: [ TodosDynamoDbTable, Arn ] }
+      # Resource: "arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:provider.environment.DYNAMODB_TABLE}"
+
+functions:
+  create:
+    handler: todos/create.create
+    events:
+      - http:
+          path: todos
+          method: post
+          cors: true
+
+  list:
+    handler: todos/list.list
+    events:
+      - http:
+          path: todos
+          method: get
+          cors: true
+
+  get:
+    handler: todos/get.get
+    events:
+      - http:
+          path: todos/{id}
+          method: get
+          cors: true
+
+  update:
+    handler: todos/update.update
+    events:
+      - http:
+          path: todos/{id}
+          method: put
+          cors: true
+
+  delete:
+    handler: todos/delete.delete
+    events:
+      - http:
+          path: todos/{id}
+          method: delete
+          cors: true
+
+  saveLogS3:
+    handler: dynamoDbS3/saveToS3.saveS3
+    timeout: "${self:custom.Timeout2}"
+    role: { Fn::GetAtt: [ SaveLogS3LambdaRole, Arn ] } 
+    events:
+      - schedule: cron(0 * * * ? *)
+    tags:
+      FUNCTION: saveLogsTXT
+    environment:
+      BUCKET_NAME: "${self:custom.Bucket_Name}"
+
+resources:
+  Resources:
+    CreateLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        RetentionInDays: ${self:custom.logRetention}
+    ListLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        RetentionInDays: ${self:custom.logRetention}
+    GetLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        RetentionInDays: ${self:custom.logRetention}
+    UpdateLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        RetentionInDays: ${self:custom.logRetention}
+    DeleteLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        RetentionInDays: ${self:custom.logRetention}
+
+    TodosDynamoDbTable:
+      Type: 'AWS::DynamoDB::Table'
+      DeletionPolicy: Delete
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_TABLE}
+        AttributeDefinitions:
+          -
+            AttributeName: id
+            AttributeType: S
+        KeySchema:
+          -
+            AttributeName: id
+            KeyType: HASH
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+        TimeToLiveSpecification: # This is the TTL
+          AttributeName: TTL
+          Enabled: true
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+        Tags:
+        - 
+          Key: "STACK"
+          Value: ${self:service}
+    
+    ScalingRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            -
+              Effect: "Allow"
+              Principal:
+                Service:
+                  - application-autoscaling.amazonaws.com
+              Action:
+                - "sts:AssumeRole"
+        Path: "/"
+        Policies:
+          -
+            PolicyName: "root"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                -
+                  Effect: "Allow"
+                  Action:
+                    - "dynamodb:DescribeTable"
+                    - "dynamodb:UpdateTable"
+                    - "cloudwatch:PutMetricAlarm"
+                    - "cloudwatch:DescribeAlarms"
+                    - "cloudwatch:GetMetricStatistics"
+                    - "cloudwatch:SetAlarmState"
+                    - "cloudwatch:DeleteAlarms"
+                  Resource: "*"
+
+    WriteCapacityScalableTarget:
+      Type: AWS::ApplicationAutoScaling::ScalableTarget
+      Properties:
+        MaxCapacity: 5
+        MinCapacity: 1
+        ResourceId:
+          'Fn::Join':
+            - /
+            - - table
+              - Ref: TodosDynamoDbTable
+        RoleARN:
+          'Fn::GetAtt':
+            - ScalingRole
+            - Arn
+        ScalableDimension: dynamodb:table:WriteCapacityUnits
+        ServiceNamespace: dynamodb
+
+    WriteScalingPolicy:
+      Type: AWS::ApplicationAutoScaling::ScalingPolicy
+      Properties:
+        PolicyName: WriteAutoScalingPolicy
+        PolicyType: TargetTrackingScaling
+        ScalingTargetId: 
+          Ref: WriteCapacityScalableTarget
+        TargetTrackingScalingPolicyConfiguration:
+          TargetValue: 70
+          ScaleInCooldown: 60
+          ScaleOutCooldown: 60
+          PredefinedMetricSpecification:
+            PredefinedMetricType: DynamoDBWriteCapacityUtilization    
+
+    ReadCapacityScalableTarget:
+      Type: AWS::ApplicationAutoScaling::ScalableTarget
+      Properties:
+        MaxCapacity: 5
+        MinCapacity: 1
+        ResourceId:
+          'Fn::Join':
+            - /
+            - - table
+              - Ref: TodosDynamoDbTable
+        RoleARN:
+          'Fn::GetAtt':
+            - ScalingRole
+            - Arn
+        ScalableDimension: dynamodb:table:ReadCapacityUnits
+        ServiceNamespace: dynamodb
+    
+    ReadScalingPolicy:
+      Type: AWS::ApplicationAutoScaling::ScalingPolicy
+      Properties:
+        PolicyName: ReadAutoScalingPolicy
+        PolicyType: TargetTrackingScaling
+        ScalingTargetId: 
+          Ref: ReadCapacityScalableTarget
+        TargetTrackingScalingPolicyConfiguration:
+          TargetValue: 70
+          ScaleInCooldown: 60
+          ScaleOutCooldown: 60
+          PredefinedMetricSpecification:
+            PredefinedMetricType: DynamoDBReadCapacityUtilization
+
+    S3BucketLog:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.Bucket_Name}
+        Tags:
+          - 
+            Key: "STACK"
+            Value: ${self:service}
+          - 
+            Key: "DB"
+            Value: ${self:custom.Bucket_Name}
+
+    S3BucketLogPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket:
+          Ref: "S3BucketLog"
+        PolicyDocument:
+          Statement:
+            - 
+              Action:
+                - "s3:GetObject"
+              Effect: "Allow"
+              Resource:
+                Fn::Join:
+                  - ""
+                  - 
+                    - "arn:aws:s3:::"
+                    - 
+                      Ref: "S3BucketLog"
+                    - "/*"
+              Principal: "*"
+    
+    SaveLogS3LambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: ${self:custom.Dynamo_S3_IAM}
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: 'sts:AssumeRole'
+        Policies:
+          - PolicyName: ${self:custom.Dynamo_S3_IAM}-policy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                    - s3:PutObject
+                    - s3:PutObjectAcl
+                  Resource:
+                    Fn::Join: ['', [Fn::GetAtt: [ S3BucketLog, Arn ], '/*'] ]
+                - Effect: Allow
+                  Action:
+                    - dynamodb:Query
+                    - dynamodb:Scan
+                    - dynamodb:GetItem
+                    - dynamodb:PutItem
+                    - dynamodb:UpdateItem
+                    - dynamodb:DeleteItem
+                  Resource: { Fn::GetAtt: [ TodosDynamoDbTable, Arn ] }
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource:
+                    - 'Fn::Join':
+                      - ':'
+                      -
+                        - 'arn:aws:logs'
+                        - Ref: 'AWS::Region'
+                        - Ref: 'AWS::AccountId'
+                        - 'log-group:/aws/lambda/'
+                        - '${self:service}-${opt:stage, self:provider.stage}-saveLogS3:*'
+                - Effect: "Allow"
+                  Action:
+                    - "iam:PassRole"
+                  Resource: "*"
+      
